@@ -1,4 +1,5 @@
 export const ROW_HEIGHT = 36;
+export const ROW_HEIGHT_IMAGE = 270;
 export const HEADER_HEIGHT = 36;
 export const ADD_COLUMN_BUTTON_WIDTH = 36;
 export const MIN_COLUMN_WIDTH = 60;
