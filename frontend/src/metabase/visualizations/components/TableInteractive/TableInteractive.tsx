@@ -32,6 +32,7 @@ import {
   FOOTER_HEIGHT,
   HEADER_HEIGHT,
   ROW_HEIGHT,
+  ROW_HEIGHT_IMAGE,
   ROW_ID_COLUMN_ID,
 } from "metabase/data-grid/constants";
 import { useDataGridInstance } from "metabase/data-grid/hooks/use-data-grid-instance";
@@ -689,6 +690,16 @@ export const TableInteractiveInner = forwardRef(function TableInteractiveInner(
     };
   }, [tableTheme.cell.textColor]);
 
+  // Check if any column has images to determine appropriate row height
+  const hasImageColumns = useMemo(() => {
+    return cols.some((col) => {
+      const columnSettings = settings.column?.(col) ?? {};
+      return columnSettings["view_as"] === "image";
+    });
+  }, [cols, settings]);
+
+  const defaultRowHeight = hasImageColumns ? ROW_HEIGHT_IMAGE : ROW_HEIGHT;
+
   const pageSize: number | undefined = useMemo(() => {
     if (settings["table.pagination"]) {
       const availableSpaceForRows = Math.max(
@@ -697,13 +708,13 @@ export const TableInteractiveInner = forwardRef(function TableInteractiveInner(
       );
 
       const heightBasedPageSize = Math.floor(
-        availableSpaceForRows / ROW_HEIGHT,
+        availableSpaceForRows / defaultRowHeight,
       );
 
       return heightBasedPageSize > 0 ? heightBasedPageSize : undefined;
     }
     return undefined;
-  }, [height, settings]);
+  }, [height, settings, defaultRowHeight]);
 
   const minGridWidth = useMemo(() => {
     return isDashcardViewTable || isEmbeddingSdk ? width : undefined;
@@ -736,6 +747,7 @@ export const TableInteractiveInner = forwardRef(function TableInteractiveInner(
     pinnedTopRowsCount,
     columnsOptions,
     theme: dataGridTheme,
+    defaultRowHeight,
     onColumnResize: handleColumnResize,
     onColumnReorder: handleColumnReordering,
     pageSize,
