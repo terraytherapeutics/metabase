@@ -61,7 +61,7 @@
   [url]
   (try
     ;; Security validation
-    (when-not (util.http/valid-host? :external-only url)
+    (when-not (util.http/host-allowed-for-network-policy? :external-only url)
       (log/warnf "Image URL failed security validation: %s" url)
       (throw (ex-info "Invalid host" {:url url})))
 

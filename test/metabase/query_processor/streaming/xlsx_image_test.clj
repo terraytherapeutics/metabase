@@ -29,7 +29,7 @@
     (with-redefs [clj-http.client/get (fn [_url _opts]
                                         {:status 200
                                          :body (byte-array [1 2 3 4])})
-                  metabase.util.http/valid-host? (constantly true)]
+                  metabase.util.http/host-allowed-for-network-policy? (constantly true)]
       (let [result (xlsx-image/download-image "http://example.com/test.png")]
         (is (some? result))
         (is (= "png" (:format result)))
@@ -39,11 +39,11 @@
     (with-redefs [clj-http.client/get (fn [_url _opts]
                                         {:status 404
                                          :body nil})
-                  metabase.util.http/valid-host? (constantly true)]
+                  metabase.util.http/host-allowed-for-network-policy? (constantly true)]
       (let [result (xlsx-image/download-image "http://example.com/notfound.png")]
         (is (nil? result)))))
 
   (testing "Download failure on security check"
-    (with-redefs [metabase.util.http/valid-host? (constantly false)]
+    (with-redefs [metabase.util.http/host-allowed-for-network-policy? (constantly false)]
       (let [result (xlsx-image/download-image "http://internal.server/image.png")]
         (is (nil? result))))))
