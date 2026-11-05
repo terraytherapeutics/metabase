@@ -6,8 +6,9 @@
   flex-direction: column;
 
   .bodyCellWithImage {
-    padding-top: 3px;
-    padding-bottom: 3px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    overflow: visible;
   }
 }
 
@@ -17,4 +18,6 @@
 
 .bodyCellWithImage img {
   vertical-align: middle;
+  display: block;
+  max-width: 100%;
 }

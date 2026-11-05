@@ -1,4 +1,5 @@
 export const ROW_HEIGHT = 36;
+export const ROW_HEIGHT_IMAGE = 270;
 export const HEADER_BASE_HEIGHT = 36;
 export const HEADER_BORDER_SIZE = 1;
 export const HEADER_HEIGHT = HEADER_BASE_HEIGHT + HEADER_BORDER_SIZE;
