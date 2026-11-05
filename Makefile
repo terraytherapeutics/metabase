@@ -13,6 +13,10 @@ TERRAY_PYPI_STORE := terray-python-291672471869.d.codeartifact.us-west-2.amazona
 AUTH_TOKEN = $(shell aws codeartifact get-authorization-token --domain terray-python --domain-owner 291672471869 --query authorizationToken --output text)
 # ECR (AWS container registry)
 ECR_URL = 291672471869.dkr.ecr.us-west-2.amazonaws.com
+# Upstream Metabase version baked into the jar by the Dockerfile's `bin/build.sh :version`.
+# Derived from the nearest upstream release tag, ignoring our terray-* deploy tags.
+# Override for one-offs: `make VERSION=v0.64.1 build_docker`
+VERSION ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null)
 
 # This is a Make keyword that says these recipes don't actually produce an output file
 .PHONY: clean clean-test clean-pyc clean-build .FORCE_REBUILD
@@ -165,7 +169,8 @@ conda_dist: clean
 # Build the Docker image and tag it '{MODULE}:latest'
 # * Requires docker to be installed on this instance
 build_docker:
-	docker build -t ${DOCKER_NAME}:latest --build-arg CODEARTIFACT_AUTH_TOKEN=${AUTH_TOKEN} .
+	@test -n "${VERSION}" || { echo "VERSION is empty; pass VERSION=vX.Y.Z"; exit 1; }
+	docker build -t ${DOCKER_NAME}:latest --build-arg VERSION=${VERSION} --build-arg CODEARTIFACT_AUTH_TOKEN=${AUTH_TOKEN} .
 
 # Push the Docker image tagged '{MODULE}:latest' to ECR as '{MODULE}:{ECR_TAG}'
 # * Requires you to run `make build_docker` first
