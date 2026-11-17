@@ -8,6 +8,7 @@
    [metabase.query-processor.streaming.common :as streaming.common]
    [metabase.query-processor.streaming.interface :as qp.si]
    [metabase.query-processor.streaming.xlsx :as qp.xlsx]
+   [metabase.query-processor.streaming.xlsx-image :as xlsx-image]
    [metabase.test :as mt]
    [metabase.util.json :as json])
   (:import
@@ -16,7 +17,8 @@
     BufferedInputStream
     BufferedOutputStream
     ByteArrayInputStream
-    ByteArrayOutputStream)))
+    ByteArrayOutputStream)
+   (java.util Base64)))
 
 (set! *warn-on-reflection* true)
 
@@ -447,11 +449,13 @@
        (parse-fn sheet)))))
 
 (defn- xlsx-export
-  [ordered-cols viz-settings rows & {:keys [parse-fn pivot-export-options]}]
+  [ordered-cols viz-settings rows & {:keys [format-rows? parse-fn pivot-export-options]
+                                     :or   {format-rows? true}}]
   (with-open [bos (ByteArrayOutputStream.)
               os  (BufferedOutputStream. bos)]
     (let [results-writer (qp.si/streaming-results-writer :xlsx os)]
       (qp.si/begin! results-writer {:data {:ordered-cols ordered-cols
+                                           :format-rows? format-rows?
                                            :pivot? (some? pivot-export-options)
                                            :pivot-export-options pivot-export-options}}
                     viz-settings)
@@ -468,6 +472,50 @@
     (map (fn [^org.apache.poi.xssf.usermodel.XSSFCell cell]
            (.. cell getCellStyle getDataFormatString))
          row)))
+
+(def ^:private png-bytes
+  (.decode (Base64/getDecoder)
+           "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+
+(defn- parse-image-export
+  [^org.apache.poi.xssf.usermodel.XSSFSheet sheet]
+  (let [workbook (.getWorkbook sheet)
+        drawing  (.getDrawingPatriarch sheet)
+        row      (.getRow sheet 1)]
+    {:rows               (parse-cell-content sheet)
+     :picture-count      (count (.getAllPictures workbook))
+     :shape-count        (if drawing
+                           (count (.getShapes ^org.apache.poi.xssf.usermodel.XSSFDrawing drawing))
+                           0)
+     :row-height         (some-> row .getHeightInPoints)
+     :default-row-height (.getDefaultRowHeightInPoints sheet)}))
+
+(deftest image-export-test
+  (let [col     {:id 0, :name "IMAGE", :field_ref [:field 0]}
+        viz     {::mb.viz/column-settings {{::mb.viz/field-id 0} {::mb.viz/view-as "image"}}}
+        url     "http://example.com/image.png"]
+    (testing "Unformatted exports keep the image URL and do not embed pictures"
+      (let [calls (atom 0)]
+        (with-redefs [xlsx-image/download-image (fn [_url]
+                                                  (swap! calls inc)
+                                                  {:bytes png-bytes, :format "png"})]
+          (let [{:keys [rows picture-count shape-count row-height default-row-height]}
+                (xlsx-export [col] viz [[url]] :format-rows? false :parse-fn parse-image-export)]
+            (is (= [["IMAGE"] [url]] rows))
+            (is (zero? @calls))
+            (is (zero? picture-count))
+            (is (zero? shape-count))
+            (is (= default-row-height row-height))))))
+
+    (testing "Formatted exports embed the image and leave the cell blank"
+      (with-redefs [xlsx-image/download-image (fn [_url]
+                                                {:bytes png-bytes, :format "png"})]
+        (let [{:keys [rows picture-count shape-count row-height]}
+              (xlsx-export [col] viz [[url]] :format-rows? true :parse-fn parse-image-export)]
+          (is (= [["IMAGE"] [nil]] rows))
+          (is (= 1 picture-count))
+          (is (= 1 shape-count))
+          (is (= 188.0 row-height)))))))
 
 (deftest export-format-test
   (mt/with-temporary-setting-values [custom-formatting {}]
