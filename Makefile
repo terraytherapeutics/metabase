@@ -168,9 +168,10 @@ conda_dist: clean
 
 # Build the Docker image and tag it '{MODULE}:latest'
 # * Requires docker to be installed on this instance
+# VERSION is read as EDN by `clojure -X`; the literal quotes make it a string, not a symbol.
 build_docker:
 	@test -n "${VERSION}" || { echo "VERSION is empty; pass VERSION=vX.Y.Z"; exit 1; }
-	docker build -t ${DOCKER_NAME}:latest --build-arg VERSION=${VERSION} --build-arg CODEARTIFACT_AUTH_TOKEN=${AUTH_TOKEN} .
+	docker build -t ${DOCKER_NAME}:latest --build-arg VERSION='"${VERSION}"' --build-arg CODEARTIFACT_AUTH_TOKEN=${AUTH_TOKEN} .
 
 # Push the Docker image tagged '{MODULE}:latest' to ECR as '{MODULE}:{ECR_TAG}'
 # * Requires you to run `make build_docker` first
