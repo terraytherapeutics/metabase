@@ -47,3 +47,22 @@
     (with-redefs [metabase.util.http/host-allowed-for-network-policy? (constantly false)]
       (let [result (xlsx-image/download-image "http://internal.server/image.png")]
         (is (nil? result))))))
+
+(deftest download-image-security-test
+  (testing "HTTP options disable redirects and use the network-policy DNS resolver"
+    (let [opts (atom nil)]
+      (with-redefs [clj-http.client/get (fn [_url request-opts]
+                                          (reset! opts request-opts)
+                                          {:status 200
+                                           :body (byte-array [1 2 3 4])})
+                    metabase.util.http/host-allowed-for-network-policy? (constantly true)]
+        (is (some? (xlsx-image/download-image "http://example.com/test.png")))
+        (is (= :none (:redirect-strategy @opts)))
+        (is (some? (:dns-resolver @opts))))))
+
+  (testing "Redirect responses are not followed"
+    (with-redefs [clj-http.client/get (fn [_url _opts]
+                                        {:status 302
+                                         :body (byte-array 0)})
+                  metabase.util.http/host-allowed-for-network-policy? (constantly true)]
+      (is (nil? (xlsx-image/download-image "http://example.com/redirect.png"))))))

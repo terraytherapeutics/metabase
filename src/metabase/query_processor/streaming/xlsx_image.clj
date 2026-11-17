@@ -53,7 +53,7 @@
     Workbook/PICTURE_TYPE_PNG)) ;; default
 
 (defn download-image
-  "Downloads an image from the given URL with security checks and size limits.
+  "Downloads an image from the given URL with security checks and size limits. Redirects are not followed.
    Returns a map with :bytes and :format keys on success, nil on failure.
 
    Parameters:
@@ -66,10 +66,12 @@
       (throw (ex-info "Invalid host" {:url url})))
 
     ;; Download the image
-    (let [response (http/get url {:as :byte-array
-                                  :socket-timeout download-timeout-ms
+    (let [response (http/get url {:as                 :byte-array
+                                  :redirect-strategy  :none
+                                  :socket-timeout     download-timeout-ms
                                   :connection-timeout download-timeout-ms
-                                  :throw-exceptions false})
+                                  :throw-exceptions   false
+                                  :dns-resolver       (util.http/network-policy-dns-resolver :external-only)})
           status (:status response)]
 
       (when-not (= 200 status)
