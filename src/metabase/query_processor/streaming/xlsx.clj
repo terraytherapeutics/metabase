@@ -746,7 +746,7 @@
               (set-no-style-custom-helper! sheet)
               (vreset! styles (generate-styles workbook viz-settings non-pivot-cols format-rows?))
               (vreset! workbook-sheet sheet)
-              (vreset! embed-state (xlsx-image/new-embed-state))))))
+              (vreset! embed-state (when format-rows? (xlsx-image/new-embed-state)))))))
 
       (write-row! [_ row row-num ordered-cols {:keys [output-order] :as viz-settings}]
         (let [ordered-row          (vec (if output-order
