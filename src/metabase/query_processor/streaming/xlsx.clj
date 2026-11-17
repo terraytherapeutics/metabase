@@ -13,6 +13,7 @@
    [metabase.query-processor.settings :as qp.settings]
    [metabase.query-processor.streaming.common :as streaming.common]
    [metabase.query-processor.streaming.interface :as qp.si]
+   [metabase.query-processor.streaming.xlsx-image :as xlsx-image]
    [metabase.util :as u]
    [metabase.util.currency :as currency]
    [metabase.util.date-2 :as u.date]
@@ -474,6 +475,18 @@
         new-helper (no-style-column-helper (xssfsheet->worksheet xssfsheet))]
     (.set (private-field xssfsheet "columnHelper") xssfsheet new-helper)))
 
+(defn- adjust-row-height-for-images!
+  "Sets row height to accommodate images (250px) if any column in the row has view_as=image.
+   250px ≈ 187.5 points in Excel (1 point = 1.33px), rounded to 188 points."
+  [sheet row-num ordered-cols viz-settings]
+  (when (some (fn [col]
+                (let [settings (streaming.common/viz-settings-for-col col viz-settings)]
+                  (= "image" (::mb.viz/view-as settings))))
+              ordered-cols)
+    (let [row (.getRow sheet row-num)]
+      (when row
+        (.setHeightInPoints row 188.0)))))
+
 (defmulti ^:private add-row!
   "Adds a row of values to the spreadsheet. Values with the `scaled` viz setting are scaled prior to being added.
 
@@ -493,6 +506,7 @@
      (add-row! ^SXSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles)))
   ([^SXSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles]
    (let [row     (.createRow sheet ^Integer row-num)
+         workbook (.getWorkbook sheet)
          ;; Using iterators here to efficiently go over multiple collections at once.
          val-it (.iterator ^Iterable values)
          col-it (.iterator ^Iterable cols)
@@ -503,6 +517,7 @@
                col (.next col-it)
                styles (.next sty-it)
                settings     (streaming.common/viz-settings-for-col col viz-settings)
+               is-image-col? (= "image" (::mb.viz/view-as settings))
                ;; value can be a column header (a string), so if the column is scaled, it'll try to do (* "count" 7)
                scaled-val   (if (and (number? value) (::mb.viz/scale settings))
                               (* value (::mb.viz/scale settings))
@@ -512,8 +527,17 @@
                parsed-value (or
                              (maybe-parse-temporal-value value col)
                              (maybe-parse-coordinate-value value col)
-                             scaled-val)]
-           (set-cell! (.createCell ^SXSSFRow row index) parsed-value styles typed-cell-styles))
+                             scaled-val)
+               cell (.createCell ^SXSSFRow row index)]
+
+           ;; Try to embed image if this is an image column
+           (if (and is-image-col?
+                    (string? parsed-value)
+                    (xlsx-image/embed-image! sheet workbook row-num index parsed-value))
+             ;; Image was embedded successfully, don't set cell value
+             nil
+             ;; Not an image column or embedding failed, set cell value normally
+             (set-cell! cell parsed-value styles typed-cell-styles)))
          (recur (inc index))))
      row)))
 
@@ -525,6 +549,7 @@
      (add-row! ^XSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles)))
   ([^XSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles]
    (let [row     (.createRow sheet ^Integer row-num)
+         workbook (.getWorkbook sheet)
          ;; Using iterators here to efficiently go over multiple collections at once.
          val-it (.iterator ^Iterable values)
          col-it (.iterator ^Iterable cols)
@@ -535,6 +560,7 @@
                col (.next col-it)
                styles (.next sty-it)
                settings     (streaming.common/viz-settings-for-col col viz-settings)
+               is-image-col? (= "image" (::mb.viz/view-as settings))
                ;; value can be a column header (a string), so if the column is scaled, it'll try to do (* "count" 7)
                scaled-val   (if (and (number? value) (::mb.viz/scale settings))
                               (* value (::mb.viz/scale settings))
@@ -544,8 +570,17 @@
                parsed-value (or
                              (maybe-parse-temporal-value value col)
                              (maybe-parse-coordinate-value value col)
-                             scaled-val)]
-           (set-cell! (.createCell ^XSSFRow row index) parsed-value styles typed-cell-styles))
+                             scaled-val)
+               cell (.createCell ^XSSFRow row index)]
+
+           ;; Try to embed image if this is an image column
+           (if (and is-image-col?
+                    (string? parsed-value)
+                    (xlsx-image/embed-image! sheet workbook row-num index parsed-value))
+             ;; Image was embedded successfully, don't set cell value
+             nil
+             ;; Not an image column or embedding failed, set cell value normally
+             (set-cell! cell parsed-value styles typed-cell-styles)))
          (recur (inc index))))
      row)))
 
@@ -725,6 +760,8 @@
                       (= pivot.postprocess/non-pivot-row-group (int group)))
               (let [{:keys [cell-styles typed-cell-styles]} @styles]
                 (add-row! @workbook-sheet (inc row-num) row' ordered-cols' viz-settings cell-styles typed-cell-styles)
+                ;; Adjust row height for images
+                (adjust-row-height-for-images! @workbook-sheet (inc row-num) ordered-cols' viz-settings)
                 (when (= (inc row-num) *auto-sizing-threshold*)
                   (autosize-columns! @workbook-sheet)))))))
 
