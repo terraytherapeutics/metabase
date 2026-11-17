@@ -505,8 +505,9 @@
                    (inc (.getLastRowNum sheet)))]
      (add-row! ^SXSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles)))
   ([^SXSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles]
-   (let [row     (.createRow sheet ^Integer row-num)
-         workbook (.getWorkbook sheet)
+   (let [row         (.createRow sheet ^Integer row-num)
+         workbook    (.getWorkbook sheet)
+         embed-state (::xlsx-image/embed-state viz-settings)
          ;; Using iterators here to efficiently go over multiple collections at once.
          val-it (.iterator ^Iterable values)
          col-it (.iterator ^Iterable cols)
@@ -531,9 +532,10 @@
                cell (.createCell ^SXSSFRow row index)]
 
            ;; Try to embed image if this is an image column
-           (if (and is-image-col?
+           (if (and embed-state
+                    is-image-col?
                     (string? parsed-value)
-                    (xlsx-image/embed-image! sheet workbook row-num index parsed-value))
+                    (xlsx-image/embed-image! sheet workbook row-num index parsed-value embed-state))
              ;; Image was embedded successfully, don't set cell value
              nil
              ;; Not an image column or embedding failed, set cell value normally
@@ -548,8 +550,9 @@
                    (inc (.getLastRowNum sheet)))]
      (add-row! ^XSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles)))
   ([^XSSFSheet sheet row-num values cols viz-settings cell-styles typed-cell-styles]
-   (let [row     (.createRow sheet ^Integer row-num)
-         workbook (.getWorkbook sheet)
+   (let [row         (.createRow sheet ^Integer row-num)
+         workbook    (.getWorkbook sheet)
+         embed-state (::xlsx-image/embed-state viz-settings)
          ;; Using iterators here to efficiently go over multiple collections at once.
          val-it (.iterator ^Iterable values)
          col-it (.iterator ^Iterable cols)
@@ -574,9 +577,10 @@
                cell (.createCell ^XSSFRow row index)]
 
            ;; Try to embed image if this is an image column
-           (if (and is-image-col?
+           (if (and embed-state
+                    is-image-col?
                     (string? parsed-value)
-                    (xlsx-image/embed-image! sheet workbook row-num index parsed-value))
+                    (xlsx-image/embed-image! sheet workbook row-num index parsed-value embed-state))
              ;; Image was embedded successfully, don't set cell value
              nil
              ;; Not an image column or embedding failed, set cell value normally
@@ -710,6 +714,7 @@
   [_ ^OutputStream os]
   (let [workbook             (SXSSFWorkbook.)
         workbook-sheet       (volatile! nil)
+        embed-state          (volatile! nil)
         styles               (volatile! nil)
         pivot-data           (volatile! nil)
         pivot-grouping-index (volatile! nil)]
@@ -740,7 +745,8 @@
                                         :format-rows? true})]
               (set-no-style-custom-helper! sheet)
               (vreset! styles (generate-styles workbook viz-settings non-pivot-cols format-rows?))
-              (vreset! workbook-sheet sheet)))))
+              (vreset! workbook-sheet sheet)
+              (vreset! embed-state (xlsx-image/new-embed-state))))))
 
       (write-row! [_ row row-num ordered-cols {:keys [output-order] :as viz-settings}]
         (let [ordered-row          (vec (if output-order
@@ -758,10 +764,14 @@
             (vswap! pivot-data update-in [:data :rows] conj! ordered-row)
             (when (or (not group)
                       (= pivot.postprocess/non-pivot-row-group (int group)))
-              (let [{:keys [cell-styles typed-cell-styles]} @styles]
-                (add-row! @workbook-sheet (inc row-num) row' ordered-cols' viz-settings cell-styles typed-cell-styles)
+              (let [{:keys [cell-styles typed-cell-styles]} @styles
+                    embed-state   @embed-state
+                    row-viz-settings (cond-> viz-settings
+                                       embed-state (assoc ::xlsx-image/embed-state embed-state))]
+                (add-row! @workbook-sheet (inc row-num) row' ordered-cols' row-viz-settings cell-styles typed-cell-styles)
                 ;; Adjust row height for images
-                (adjust-row-height-for-images! @workbook-sheet (inc row-num) ordered-cols' viz-settings)
+                (when embed-state
+                  (adjust-row-height-for-images! @workbook-sheet (inc row-num) ordered-cols' row-viz-settings))
                 (when (= (inc row-num) *auto-sizing-threshold*)
                   (autosize-columns! @workbook-sheet)))))))
 

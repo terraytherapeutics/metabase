@@ -5,7 +5,29 @@
    [metabase.query-processor.streaming.xlsx-image :as xlsx-image]
    [metabase.util.http])
   (:import
-   (java.io ByteArrayInputStream)))
+   (java.io ByteArrayInputStream)
+   (java.util Base64)
+   (org.apache.poi.xssf.streaming SXSSFSheet SXSSFWorkbook)
+   (org.apache.poi.xssf.usermodel XSSFDrawing)))
+
+(def ^:private png-bytes
+  (.decode (Base64/getDecoder)
+           "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+
+(defn- with-test-workbook
+  [f]
+  (with-open [workbook (SXSSFWorkbook.)]
+    (f workbook (.createSheet workbook "Test"))))
+
+(defn- sheet-picture-count
+  [^SXSSFSheet sheet]
+  (if-let [drawing (.getDrawingPatriarch sheet)]
+    (count (.getShapes ^XSSFDrawing drawing))
+    0))
+
+(defn- workbook-picture-count
+  [^SXSSFWorkbook workbook]
+  (count (.getAllPictures workbook)))
 
 (defn- tracking-stream
   "Returns a [stream closed?] pair where closed? flips when the stream is closed."
@@ -125,3 +147,92 @@
                       metabase.util.http/host-allowed-for-network-policy? (constantly true)]
           (is (nil? (xlsx-image/download-image "http://example.com/redirect.png")))
           (is (true? @closed?)))))))
+
+
+(deftest embed-image-cache-test
+  (with-test-workbook
+    (fn [workbook sheet]
+      (let [state (xlsx-image/new-embed-state)
+            url   "http://example.com/image.png"
+            calls (atom 0)]
+        (with-redefs [xlsx-image/download-image (fn [_url]
+                                                  (swap! calls inc)
+                                                  {:bytes  png-bytes
+                                                   :format "png"})]
+          (is (true? (xlsx-image/embed-image! sheet workbook 0 0 url state)))
+          (is (true? (xlsx-image/embed-image! sheet workbook 1 0 url state))))
+        (is (= 1 @calls))
+        (is (= 2 (sheet-picture-count sheet)))
+        (is (= 1 (workbook-picture-count workbook)))
+        (is (contains? (:cache @state) url))))))
+
+(deftest embed-image-failed-cache-test
+  (with-test-workbook
+    (fn [workbook sheet]
+      (let [state (xlsx-image/new-embed-state)
+            url   "http://example.com/missing.png"
+            calls (atom 0)]
+        (with-redefs [xlsx-image/download-image (fn [_url]
+                                                  (swap! calls inc)
+                                                  nil)]
+          (is (false? (xlsx-image/embed-image! sheet workbook 0 0 url state)))
+          (is (false? (xlsx-image/embed-image! sheet workbook 1 0 url state))))
+        (is (= 1 @calls))
+        (is (= :failed (get-in @state [:cache url])))
+        (is (zero? (sheet-picture-count sheet)))
+        (is (zero? (workbook-picture-count workbook)))))))
+
+(deftest embed-image-attempt-limit-test
+  (with-test-workbook
+    (fn [workbook sheet]
+      (let [state (xlsx-image/new-embed-state)
+            url   "http://example.com/image.png"
+            calls (atom 0)]
+        (swap! state assoc :attempts @#'xlsx-image/max-download-attempts)
+        (with-redefs [xlsx-image/download-image (fn [_url]
+                                                  (swap! calls inc)
+                                                  {:bytes  png-bytes
+                                                   :format "png"})]
+          (is (false? (xlsx-image/embed-image! sheet workbook 0 0 url state))))
+        (is (zero? @calls))
+        (is (zero? (sheet-picture-count sheet)))
+        (is (zero? (workbook-picture-count workbook)))
+        (is (:limit-logged? @state))))))
+
+(deftest embed-image-byte-budget-test
+  (with-test-workbook
+    (fn [workbook sheet]
+      (let [state      (xlsx-image/new-embed-state)
+            max-size   @#'xlsx-image/max-total-image-bytes
+            first-url  "http://example.com/first.png"
+            second-url "http://example.com/second.png"
+            calls      (atom 0)]
+        (swap! state assoc :bytes-used (- max-size 3))
+        (with-redefs [xlsx-image/download-image (fn [_url]
+                                                  (swap! calls inc)
+                                                  {:bytes  (byte-array 4)
+                                                   :format "png"})]
+          (is (false? (xlsx-image/embed-image! sheet workbook 0 0 first-url state)))
+          (is (false? (xlsx-image/embed-image! sheet workbook 1 0 second-url state))))
+        (is (= 1 @calls))
+        (is (zero? (sheet-picture-count sheet)))
+        (is (zero? (workbook-picture-count workbook)))
+        (is (:budget-exhausted? @state))
+        (is (:limit-logged? @state))))))
+
+(deftest embed-image-cache-after-budget-test
+  (with-test-workbook
+    (fn [workbook sheet]
+      (let [state (xlsx-image/new-embed-state)
+            url   "http://example.com/image.png"
+            calls (atom 0)]
+        (with-redefs [xlsx-image/download-image (fn [_url]
+                                                  (swap! calls inc)
+                                                  {:bytes  png-bytes
+                                                   :format "png"})]
+          (is (true? (xlsx-image/embed-image! sheet workbook 0 0 url state)))
+          (swap! state assoc :budget-exhausted? true)
+          (is (true? (xlsx-image/embed-image! sheet workbook 1 0 url state))))
+        (is (= 1 @calls))
+        (is (= 2 (sheet-picture-count sheet)))
+        (is (= 1 (workbook-picture-count workbook)))))))

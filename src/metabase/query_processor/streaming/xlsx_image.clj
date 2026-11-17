@@ -17,6 +17,14 @@
   "Maximum size for downloaded images (5MB)"
   (* 5 1024 1024))
 
+(def ^:private max-total-image-bytes
+  "Maximum total image bytes embedded in one export (50MB). This is a per-export limit chosen by convention."
+  (* 50 1024 1024))
+
+(def ^:private max-download-attempts
+  "Maximum image download attempts per export (1000). This is a per-export limit chosen by convention."
+  1000)
+
 (def ^:private download-timeout-ms
   "Timeout for image downloads (10 seconds)"
   10000)
@@ -28,6 +36,13 @@
 (def ^:private download-buffer-size
   "Size of the buffer used while reading image downloads."
   8192)
+
+(defn new-embed-state
+  "Returns a fresh per-export state used to budget and deduplicate embedded images."
+  []
+  (atom {:bytes-used 0
+         :attempts   0
+         :cache      {}}))
 
 (defn supported-image-format?
   "Returns true if the URL appears to point to a supported image format."
@@ -110,6 +125,33 @@
       (log/debugf e "Failed to download image: %s" url)
       nil)))
 
+(defn- add-picture!
+  "Adds an anchored picture to the sheet using an existing workbook picture index."
+  [sheet row-num col-num picture-index]
+  (let [drawing (or (.getDrawingPatriarch ^SXSSFSheet sheet)
+                    (.createDrawingPatriarch ^SXSSFSheet sheet))
+        ;; The image will be positioned in the cell and sized to fit
+        anchor  (doto (XSSFClientAnchor.)
+                  (.setCol1 col-num)
+                  (.setRow1 row-num)
+                  (.setCol2 (inc col-num))
+                  (.setRow2 (inc row-num))
+                  (.setAnchorType ClientAnchor$AnchorType/MOVE_AND_RESIZE))]
+    (.createPicture drawing anchor picture-index)
+    true))
+
+(defn- limit-reached?
+  [{:keys [bytes-used attempts budget-exhausted?]}]
+  (or budget-exhausted?
+      (>= attempts max-download-attempts)
+      (>= bytes-used max-total-image-bytes)))
+
+(defn- log-limit-once!
+  [state]
+  (when-not (:limit-logged? @state)
+    (swap! state assoc :limit-logged? true)
+    (log/info "XLSX image embedding budget exhausted; exporting remaining images as URLs.")))
+
 (defn embed-image!
   "Attempts to embed an image from URL into the specified Excel cell.
    Returns true if successful, false if fallback to URL text is needed.
@@ -119,39 +161,50 @@
    - workbook: SXSSFWorkbook containing the sheet
    - row-num: Row index (0-based)
    - col-num: Column index (0-based)
-   - url: Image URL string"
-  [sheet workbook row-num col-num url]
+   - url: Image URL string
+   - state: atom from [[new-embed-state]] for this export"
+  [sheet workbook row-num col-num url state]
   (try
-    (when-not (supported-image-format? url)
-      (log/debugf "Unsupported image format for URL: %s" url)
-      (throw (ex-info "Unsupported format" {:url url})))
+    (let [{:keys [cache] :as snapshot} @state]
+      (cond
+        (not (supported-image-format? url))
+        (do
+          (log/debugf "Unsupported image format for URL: %s" url)
+          false)
 
-    ;; Download image
-    (let [image-data (download-image url)]
+        (= :failed (get cache url))
+        false
 
-      (when-not image-data
-        (throw (ex-info "Failed to download image" {:url url})))
+        (contains? cache url)
+        (add-picture! sheet row-num col-num (get cache url))
 
-      (let [{:keys [bytes format]} image-data
-            poi-type (image-format->poi-type format)
-            picture-index (.addPicture workbook bytes poi-type)
+        (limit-reached? snapshot)
+        (do
+          (log-limit-once! state)
+          false)
 
-            ;; Get or create drawing patriarch
-            drawing (or (.getDrawingPatriarch ^SXSSFSheet sheet)
-                        (.createDrawingPatriarch ^SXSSFSheet sheet))
-
-            ;; Create anchor for positioning
-            ;; The image will be positioned in the cell and sized to fit
-            anchor (doto (XSSFClientAnchor.)
-                     (.setCol1 col-num)
-                     (.setRow1 row-num)
-                     (.setCol2 (inc col-num))
-                     (.setRow2 (inc row-num))
-                     (.setAnchorType ClientAnchor$AnchorType/MOVE_AND_RESIZE))]
-
-        ;; Create the picture - it will be sized according to anchor bounds (MOVE_AND_RESIZE anchor type)
-        (.createPicture drawing anchor picture-index)
-        true))
+        :else
+        (let [_          (swap! state update :attempts inc)
+              image-data (download-image url)]
+          (if-not image-data
+            (do
+              (swap! state assoc-in [:cache url] :failed)
+              false)
+            (let [^bytes image-bytes (:bytes image-data)
+                  image-size        (alength image-bytes)
+                  format            (:format image-data)]
+              (if (> (+ (:bytes-used @state) image-size) max-total-image-bytes)
+                (do
+                  (swap! state #(-> %
+                                    (assoc :budget-exhausted? true)
+                                    (assoc-in [:cache url] :failed)))
+                  (log-limit-once! state)
+                  false)
+                (let [picture-index (.addPicture workbook image-bytes (image-format->poi-type format))]
+                  (swap! state #(-> %
+                                    (update :bytes-used + image-size)
+                                    (assoc-in [:cache url] picture-index)))
+                  (add-picture! sheet row-num col-num picture-index))))))))
 
     (catch Exception e
       (log/warnf e "Failed to embed image from URL: %s" url)
