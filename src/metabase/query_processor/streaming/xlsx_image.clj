@@ -25,6 +25,10 @@
   "Image formats supported by Apache POI"
   #{".png" ".jpg" ".jpeg" ".bmp"})
 
+(def ^:private download-buffer-size
+  "Size of the buffer used while reading image downloads."
+  8192)
+
 (defn supported-image-format?
   "Returns true if the URL appears to point to a supported image format."
   [url]
@@ -52,6 +56,23 @@
     "bmp" Workbook/PICTURE_TYPE_DIB
     Workbook/PICTURE_TYPE_PNG)) ;; default
 
+(defn- read-image-body
+  "Reads at most `max-image-size-bytes` from the body stream, throwing if it is larger. Closes the stream."
+  ^bytes [^java.io.InputStream in]
+  (with-open [^java.io.InputStream body in]
+    (let [^java.io.ByteArrayOutputStream out (java.io.ByteArrayOutputStream.)
+          ^bytes                            buffer (byte-array download-buffer-size)]
+      (loop [total 0]
+        (let [limit (int (min download-buffer-size (inc (- max-image-size-bytes total))))
+              n     (.read body buffer 0 limit)]
+          (if (neg? n)
+            (.toByteArray out)
+            (let [total' (+ total n)]
+              (when (> total' max-image-size-bytes)
+                (throw (ex-info "Image too large" {:size total'})))
+              (.write out buffer 0 n)
+              (recur total'))))))))
+
 (defn download-image
   "Downloads an image from the given URL with security checks and size limits. Redirects are not followed.
    Returns a map with :bytes and :format keys on success, nil on failure.
@@ -66,25 +87,24 @@
       (throw (ex-info "Invalid host" {:url url})))
 
     ;; Download the image
-    (let [response (http/get url {:as                 :byte-array
+    (let [response (http/get url {:as                 :stream
                                   :redirect-strategy  :none
                                   :socket-timeout     download-timeout-ms
                                   :connection-timeout download-timeout-ms
                                   :throw-exceptions   false
                                   :dns-resolver       (util.http/network-policy-dns-resolver :external-only)})
-          status (:status response)]
-
+          status   (:status response)
+          ^java.io.InputStream body (:body response)]
       (when-not (= 200 status)
+        (when body
+          (.close body))
         (throw (ex-info "HTTP error" {:status status :url url})))
 
-      (let [bytes (:body response)
-            content-length (count bytes)]
+      (when-not body
+        (throw (ex-info "Missing response body" {:url url})))
 
-        (when (> content-length max-image-size-bytes)
-          (throw (ex-info "Image too large" {:size content-length :url url})))
-
-        {:bytes bytes
-         :format (extract-format url)}))
+      {:bytes  (read-image-body body)
+       :format (extract-format url)})
 
     (catch Exception e
       (log/debugf e "Failed to download image: %s" url)
